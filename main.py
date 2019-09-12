@@ -7,6 +7,8 @@ import jinja2
 import re
 import os
 
+from copy import deepcopy
+
 TOC_TEMPLATE = "toc.md.jinja2"
 ENDPOINT_TEMPLATE = "endpoint.md.jinja2"
 DATA_TYPES_TEMPLATE = "datatypes.md.jinja2"
@@ -23,10 +25,14 @@ HTTP_METHODS = [
 ]
 
 OUT_DIR = "./out"
-TOC_FILE = "xrp-api-reference.md"
-DATA_TYPES_FILE = "xrp-api-data-types.md"
+API_SLUG = "xrp-api"
+DATA_TYPES_SUFFIX = "-data-types"
+METHOD_TOC_SUFFIX = "-methods"
+YAML_MD_PATH = "references/xrp-api/"
+YAML_OUT_FILE = API_SLUG+"-test.yml"
 
 yaml = ruamel.yaml.YAML(typ="safe")
+yaml.indent(offset=4, sequence=4, mapping=8)
 
 def parse_cli():
     parser = argparse.ArgumentParser()
@@ -39,6 +45,10 @@ class ApiDef:
             self.swag = yaml.load(f)
         self.env = jinja2.Environment(loader=jinja2.FileSystemLoader("templates"))
         self.out_dir = OUT_DIR
+        try:
+            self.api_title = self.swag["info"]["title"]
+        except IndexError:
+            self.api_title = fname.replace(".yml","")+" API (working title)"
 
     def deref(self, ref, add_title=False):
         assert len(ref) > 1 and ref[0] == "#" and ref[1] == "/"
@@ -64,7 +74,7 @@ class ApiDef:
         return dig(parts, self.swag)
 
     def render(self):
-        self.write_file(self.render_toc(), TOC_FILE)
+        self.write_file(self.render_toc(), API_SLUG+METHOD_TOC_SUFFIX+".md")
 
         for path, path_def in self.swag["paths"].items():
             #TODO: inherit path-generic fields
@@ -74,7 +84,7 @@ class ApiDef:
                     to_file = method_file(path, method, endpoint)
                     self.write_file(self.render_endpoint(path, method, endpoint), to_file)
 
-        self.write_file(self.render_data_types(), DATA_TYPES_FILE)
+        self.write_file(self.render_data_types(), API_SLUG+DATA_TYPES_SUFFIX+".md")
 
     def render_toc(self):
         t = self.env.get_template(TOC_TEMPLATE)
@@ -117,6 +127,66 @@ class ApiDef:
         #TODO: header & cookie params??
         return t.render(endpoint, **context)
 
+    def create_pagelist(self):
+
+        README_URL = "https://raw.githubusercontent.com/intelliot/xrp-api/master/README.md" #TODO: move
+
+        GENERIC_PROPERTIES = {
+            "funnel": "Docs",
+            "doc_type": "References",
+            "supercategory": "XRP-API",
+            "targets": ["local"]
+        }
+
+        pages = []
+        # add README
+        readme = deepcopy(GENERIC_PROPERTIES)
+        readme.update({
+            "md": README_URL,
+            "html": API_SLUG+".html",
+        })
+        pages.append(readme)
+
+        # add data types page
+        data_types_page = deepcopy(GENERIC_PROPERTIES)
+        data_types_page.update({
+           "md": YAML_MD_PATH+API_SLUG+DATA_TYPES_SUFFIX+".md",
+           "html": API_SLUG+DATA_TYPES_SUFFIX+".html",
+           "blurb": "Definitions for all data types in "+self.api_title, #TODO: template so it's translatable
+           "category": self.api_title+" Conventions", #TODO: template
+       })
+        pages.append(data_types_page)
+
+        # add toc
+        toc_page = deepcopy(GENERIC_PROPERTIES)
+        toc_page.update({
+            "md": YAML_MD_PATH+API_SLUG+METHOD_TOC_SUFFIX+".md",
+            "html": API_SLUG+METHOD_TOC_SUFFIX+".html",
+            "blurb": "List of methods/endpoints available in "+self.api_title, #TODO: template
+            "category": self.api_title+" Methods", #TODO: template
+        })
+        pages.append(toc_page)
+
+        for path, path_def in self.swag["paths"].items():
+            for method in HTTP_METHODS:
+                if method in path_def.keys():
+                    endpoint = path_def[method]
+
+                    method_page = deepcopy(GENERIC_PROPERTIES)
+                    method_page.update({
+                        "md": YAML_MD_PATH+method_file(path, method, endpoint),
+                        "html": method_link(path, method, endpoint),
+                        "blurb": endpoint.get("description", endpoint["operationId"]+" method"),
+                        "category": self.api_title+" Methods",
+                    })
+                    pages.append(method_page)
+
+        yaml2 = ruamel.yaml.YAML()
+        yaml2.indent(offset=4, sequence=8)
+        out_path = os.path.join(OUT_DIR, YAML_OUT_FILE)
+        with open(out_path, "w", encoding="utf-8") as f:
+            yaml2.dump({"pages":pages}, f)
+
     def new_context(self):
         return {
             "type_link": type_link,
@@ -134,13 +204,13 @@ class ApiDef:
 
 
 def type_link(title):
-    return DATA_TYPES_FILE.replace(".md",".html")+"#"+slugify(title.lower())
+    return API_SLUG+DATA_TYPES_SUFFIX+".html#"+slugify(title.lower())
 
 def method_link(path, method, endpoint):
-    return slugify(endpoint["operationId"]+".html")
+    return API_SLUG+"-"+slugify(endpoint["operationId"]+".html")
 
 def method_file(path, method, endpoint):
-    return slugify(endpoint["operationId"]+".md")
+    return API_SLUG+"-"+slugify(endpoint["operationId"]+".md")
 
 unacceptable_chars = re.compile(r"[^A-Za-z0-9._ ]+")
 whitespace_regex = re.compile(r"\s+")
@@ -156,3 +226,4 @@ if __name__ == "__main__":
     args = parse_cli()
     ref = ApiDef(args.api_def)
     ref.render()
+    ref.create_pagelist()
